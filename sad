@@ -1,0 +1,762 @@
+--!strict
+-- ability-arena-combat-gui.lua
+-- Roblox LuaU, load from a LocalScript placed in StarterPlayerScripts,
+-- or execute via a trusted executor in the client context.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local StarterGui = game:GetService("StarterGui")
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
+local CONFIG_DIR = "OJBS"
+local CONFIG_PATH = CONFIG_DIR .. "/abilityarena.json"
+local CONFIG_VERSION = 1
+
+local function deepCopy(tbl)
+    local copy = {}
+    for k, v in pairs(tbl) do
+        copy[k] = type(v) == "table" and deepCopy(v) or v
+    end
+    return copy
+end
+
+local function ensureDir()
+    if isfolder and not isfolder(CONFIG_DIR) then
+        makefolder(CONFIG_DIR)
+    end
+end
+
+local Defaults = {
+    version = CONFIG_VERSION,
+    theme = "Crimson",
+    uiScale = 1,
+    openKey = Enum.KeyCode.RightShift,
+    features = {},
+    settings = {
+        theme = "Crimson",
+        animations = true,
+        uiScale = 1,
+        openKey = Enum.KeyCode.RightShift,
+    },
+}
+
+local Config = deepCopy(Defaults)
+
+local function serializeSave()
+    if not writefile then return end
+    ensureDir()
+    local copy = deepCopy(Config)
+    copy.settings.openKey = Config.settings.openKey.Name
+    writefile(CONFIG_PATH, HttpService:JSONEncode(copy))
+end
+
+local function serializeLoad()
+    if not readfile or not isfile then return end
+    ensureDir()
+    if not isfile(CONFIG_PATH) then return end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIG_PATH))
+    end)
+    if not ok or type(data) ~= "table" then return end
+    Config = deepCopy(Defaults)
+    Config.features = data.features or {}
+    for k, v in pairs(data.settings or {}) do
+        if pcall(function() return v end) then
+            Config.settings[k] = v
+        end
+    end
+    if Config.settings.openKey then
+        local name = Config.settings.openKey
+        if typeof(name) == "string" then
+            local ok2, key = pcall(function() return Enum.KeyCode[name] end)
+            if ok2 then Config.settings.openKey = key end
+        end
+    end
+end
+
+serializeLoad()
+
+-- ============================================================
+-- THEME
+-- ============================================================
+local Themes = {
+    Crimson = {
+        bg = Color3.fromRGB(16, 14, 20),
+        panel = Color3.fromRGB(24, 20, 30),
+        panelLight = Color3.fromRGB(34, 28, 42),
+        accent = Color3.fromRGB(220, 40, 60),
+        accentLight = Color3.fromRGB(255, 90, 110),
+        text = Color3.fromRGB(240, 238, 245),
+        subtext = Color3.fromRGB(160, 152, 170),
+        stroke = Color3.fromRGB(48, 40, 58),
+        switchOff = Color3.fromRGB(50, 44, 62),
+    },
+    Ocean = {
+        bg = Color3.fromRGB(10, 16, 24),
+        panel = Color3.fromRGB(16, 24, 34),
+        panelLight = Color3.fromRGB(24, 36, 50),
+        accent = Color3.fromRGB(40, 160, 220),
+        accentLight = Color3.fromRGB(90, 200, 245),
+        text = Color3.fromRGB(235, 242, 248),
+        subtext = Color3.fromRGB(140, 160, 180),
+        stroke = Color3.fromRGB(30, 44, 60),
+        switchOff = Color3.fromRGB(36, 50, 68),
+    },
+    Emerald = {
+        bg = Color3.fromRGB(12, 20, 16),
+        panel = Color3.fromRGB(18, 30, 24),
+        panelLight = Color3.fromRGB(26, 44, 34),
+        accent = Color3.fromRGB(40, 200, 120),
+        accentLight = Color3.fromRGB(90, 235, 160),
+        text = Color3.fromRGB(236, 246, 240),
+        subtext = Color3.fromRGB(145, 165, 152),
+        stroke = Color3.fromRGB(32, 50, 40),
+        switchOff = Color3.fromRGB(34, 52, 42),
+    },
+    Amethyst = {
+        bg = Color3.fromRGB(18, 12, 24),
+        panel = Color3.fromRGB(26, 18, 36),
+        panelLight = Color3.fromRGB(36, 26, 50),
+        accent = Color3.fromRGB(150, 70, 230),
+        accentLight = Color3.fromRGB(190, 120, 255),
+        text = Color3.fromRGB(244, 238, 250),
+        subtext = Color3.fromRGB(160, 145, 175),
+        stroke = Color3.fromRGB(46, 34, 62),
+        switchOff = Color3.fromRGB(48, 36, 64),
+    },
+}
+
+local Theme = Themes[Config.settings.theme] or Themes.Crimson
+local Connections = {}
+
+local function conn(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(Connections, c)
+    return c
+end
+
+local function tween(obj, props, dur)
+    local info = TweenInfo.new(
+        Config.settings.animations and (dur or 0.18) or 0,
+        Enum.EasingStyle.Quint,
+        Enum.EasingDirection.Out
+    )
+    local t = TweenService:Create(obj, info, props)
+    t:Play()
+    return t
+end
+
+-- ============================================================
+-- UI LIBRARY
+-- ============================================================
+local function new(class, props, parent)
+    local obj = Instance.new(class)
+    for k, v in pairs(props or {}) do
+        obj[k] = v
+    end
+    obj.Parent = parent
+    return obj
+end
+
+local function corner(parent, r)
+    return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, parent)
+end
+
+local function stroke(parent, color, thick)
+    return new("UIStroke", {
+        Color = color or Theme.stroke,
+        Thickness = thick or 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, parent)
+end
+
+local function pad(parent, p)
+    return new("UIPadding", {
+        PaddingTop = UDim.new(0, p),
+        PaddingBottom = UDim.new(0, p),
+        PaddingLeft = UDim.new(0, p),
+        PaddingRight = UDim.new(0, p),
+    }, parent)
+end
+
+-- Root ScreenGui
+local ScreenGui = new("ScreenGui", {
+    Name = "OJBS_CombatGUI",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder = 999,
+}, Players.LocalPlayer:WaitForChild("PlayerGui"))
+
+-- Window
+local Window = new("Frame", {
+    Name = "Window",
+    Size = UDim2.new(0, 620, 0, 460),
+    Position = UDim2.new(0.5, -310, 0.5, -230),
+    BackgroundColor3 = Theme.bg,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+}, ScreenGui)
+corner(Window, 14)
+stroke(Window, Theme.stroke, 1)
+
+local DropShadow = new("ImageLabel", {
+    Size = UDim2.new(1, 40, 1, 40),
+    Position = UDim2.new(0, -20, 0, -20),
+    BackgroundTransparency = 1,
+    Image = "rbxassetid://5028857084",
+    ImageColor3 = Color3.new(0, 0, 0),
+    ImageTransparency = 0.55,
+    ScaleType = Enum.ScaleType.Slice,
+    SliceCenter = Rect.new(24, 24, 280, 280),
+    ZIndex = 0,
+}, Window)
+
+local TitleBar = new("Frame", {
+    Name = "TitleBar",
+    Size = UDim2.new(1, 0, 0, 46),
+    BackgroundColor3 = Theme.panel,
+    BorderSizePixel = 0,
+    ZIndex = 5,
+}, Window)
+corner(TitleBar, 14)
+new("Frame", {
+    Size = UDim2.new(1, 0, 0, 18),
+    Position = UDim2.new(0, 0, 1, -18),
+    BackgroundColor3 = Theme.panel,
+    BorderSizePixel = 0,
+}, TitleBar)
+
+local Logo = new("TextLabel", {
+    Size = UDim2.new(0, 200, 1, 0),
+    Position = UDim2.new(0, 18, 0, 0),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamBold,
+    Text = "ABILITY ARENA",
+    TextColor3 = Theme.accentLight,
+    TextSize = 15,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, TitleBar)
+
+local SubLogo = new("TextLabel", {
+    Size = UDim2.new(0, 200, 0, 14),
+    Position = UDim2.new(0, 19, 0, 26),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.Gotham,
+    Text = "combat suite",
+    TextColor3 = Theme.subtext,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, TitleBar)
+
+local function makeTitleButton(text, xOffset, color)
+    local b = new("TextButton", {
+        Size = UDim2.new(0, 26, 0, 26),
+        Position = UDim2.new(1, xOffset, 0.5, -13),
+        BackgroundColor3 = Theme.panelLight,
+        Text = text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        TextColor3 = color or Theme.subtext,
+        AutoButtonColor = false,
+        ZIndex = 6,
+    }, TitleBar)
+    corner(b, 7)
+    return b
+end
+
+local CollapseBtn = makeTitleButton("—", -96)
+local ThemeBtn = makeTitleButton("◐", -66)
+local CloseBtn = makeTitleButton("✕", -36, Theme.accent)
+
+-- Tabs rail
+local TabRail = new("Frame", {
+    Name = "TabRail",
+    Size = UDim2.new(0, 150, 1, -46),
+    Position = UDim2.new(0, 0, 0, 46),
+    BackgroundColor3 = Theme.panel,
+    BorderSizePixel = 0,
+}, Window)
+new("Frame", {
+    Size = UDim2.new(0, 1, 1, 0),
+    Position = UDim2.new(1, -1, 0, 0),
+    BackgroundColor3 = Theme.stroke,
+    BorderSizePixel = 0,
+}, TabRail)
+pad(TabRail, 8)
+new("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 4),
+}, TabRail)
+
+local Content = new("Frame", {
+    Name = "Content",
+    Size = UDim2.new(1, -150, 1, -46),
+    Position = UDim2.new(0, 150, 0, 46),
+    BackgroundColor3 = Theme.bg,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+}, Window)
+
+-- ============================================================
+-- ELEMENT FACTORY
+-- ============================================================
+local UILib = {}
+
+function UILib.Tab(name)
+    local b = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 30),
+        BackgroundColor3 = Theme.panel,
+        Text = name,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = Theme.subtext,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        AutoButtonColor = false,
+        LayoutOrder = #TabRail:GetChildren(),
+    }, TabRail)
+    corner(b, 7)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 10) }, b)
+    return b
+end
+
+function UILib.Page(tabBtn)
+    local scroll = new("ScrollingFrame", {
+        Size = UDim2.new(1, -16, 1, -16),
+        Position = UDim2.new(0, 8, 0, 8),
+        BackgroundTransparency = 1,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.stroke,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Visible = false,
+    }, Content)
+    new("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 10),
+    }, scroll)
+    return scroll
+end
+
+function UILib.Section(page, title, order)
+    local f = new("Frame", {
+        Size = UDim2.new(1, -2, 0, 0),
+        BackgroundColor3 = Theme.panel,
+        BorderSizePixel = 0,
+        LayoutOrder = order or 0,
+        AutomaticSize = Enum.AutomaticSize.Y,
+    }, page)
+    corner(f, 10)
+    stroke(f, Theme.stroke, 1)
+    local body = new("Frame", {
+        Size = UDim2.new(1, -16, 0, 0),
+        Position = UDim2.new(0, 8, 0, 8),
+        BackgroundTransparency = 1,
+        AutomaticSize = Enum.AutomaticSize.Y,
+    }, f)
+    new("UIListLayout", { Padding = UDim.new(0, 2) }, body)
+    local head = new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 18),
+        BackgroundTransparency = 1,
+        Text = title,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+        TextColor3 = Theme.accentLight,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, body)
+    head.LayoutOrder = -1
+    return body
+end
+
+function UILib.Toggle(parent, label, default, callback)
+    local row = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 26),
+        BackgroundTransparency = 1,
+        Text = "",
+        AutoButtonColor = false,
+    }, parent)
+    new("TextLabel", {
+        Size = UDim2.new(1, -40, 1, 0),
+        BackgroundTransparency = 1,
+        Text = label,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = Theme.text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, row)
+    local track = new("Frame", {
+        Size = UDim2.new(0, 30, 0, 16),
+        Position = UDim2.new(1, -30, 0.5, -8),
+        BackgroundColor3 = default and Theme.accent or Theme.switchOff,
+        BorderSizePixel = 0,
+    }, row)
+    corner(track, 8)
+    local knob = new("Frame", {
+        Size = UDim2.new(0, 12, 0, 12),
+        Position = default and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6),
+        BackgroundColor3 = Theme.text,
+        BorderSizePixel = 0,
+    }, track)
+    corner(knob, 6)
+
+    local state = default and true or false
+    local function set(v, silent)
+        state = v
+        tween(track, { BackgroundColor3 = v and Theme.accent or Theme.switchOff }, 0.15)
+        tween(knob, { Position = v and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6) }, 0.15)
+        if not silent and callback then callback(v) end
+    end
+
+    conn(row.Activated or row.MouseButton1Click, function() set(not state) end)
+    set(default, true)
+    return { set = set, get = function() return state end, row = row }
+end
+
+function UILib.Slider(parent, label, min, max, default, callback)
+    local holder = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 34),
+        BackgroundTransparency = 1,
+    }, parent)
+    local lbl = new("TextLabel", {
+        Size = UDim2.new(1, -50, 0, 16),
+        BackgroundTransparency = 1,
+        Text = label,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = Theme.text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, holder)
+    local val = new("TextLabel", {
+        Size = UDim2.new(0, 50, 0, 16),
+        Position = UDim2.new(1, -50, 0, 0),
+        BackgroundTransparency = 1,
+        Text = tostring(default),
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = Theme.accentLight,
+        TextXAlignment = Enum.TextXAlignment.Right,
+    }, holder)
+    local bar = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 4),
+        Position = UDim2.new(0, 0, 0, 24),
+        BackgroundColor3 = Theme.panelLight,
+        BorderSizePixel = 0,
+    }, holder)
+    corner(bar, 2)
+    local fill = new("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = Theme.accent,
+        BorderSizePixel = 0,
+    }, bar)
+    corner(fill, 2)
+
+    local value = default
+    local dragging = false
+    local function applyFromX(mx)
+        local rel = math.clamp((mx - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        value = math.floor((min + (max - min) * rel) * 100 + 0.5) / 100
+        fill.Size = UDim2.new(rel, 0, 1, 0)
+        val.Text = tostring(value)
+        if callback then callback(value) end
+    end
+    conn(bar.InputBegan, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            applyFromX(inp.Position.X)
+        end
+    end)
+    conn(UserInputService.InputChanged, function(inp)
+        if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            applyFromX(inp.Position.X)
+        end
+    end)
+    conn(UserInputService.InputEnded, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    return { set = function(v) applyFromX(bar.AbsolutePosition.X + bar.AbsoluteSize.X * ((v - min) / (max - min))) end, get = function() return value end }
+end
+
+function UILib.Dropdown(parent, label, options, default, callback)
+    local holder = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 28),
+        BackgroundTransparency = 1,
+    }, parent)
+    new("TextLabel", {
+        Size = UDim2.new(0.5, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Text = label,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = Theme.text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, holder)
+    local btn = new("TextButton", {
+        Size = UDim2.new(0, 140, 0, 22),
+        Position = UDim2.new(1, -140, 0.5, -11),
+        BackgroundColor3 = Theme.panelLight,
+        Text = default,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextColor3 = Theme.accentLight,
+        AutoButtonColor = false,
+    }, holder)
+    corner(btn, 6)
+    local open = false
+    local list = new("Frame", {
+        Size = UDim2.new(0, 140, 0, 0),
+        Position = UDim2.new(1, -140, 0, 30),
+        BackgroundColor3 = Theme.panelLight,
+        Visible = false,
+        ZIndex = 20,
+    }, holder)
+    corner(list, 6)
+    new("UIListLayout", { Padding = UDim.new(0, 2) }, list)
+    pad(list, 4)
+
+    for _, opt in ipairs(options) do
+        local o = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, 20),
+            BackgroundColor3 = Theme.panelLight,
+            Text = opt,
+            Font = Enum.Font.Gotham,
+            TextSize = 11,
+            TextColor3 = Theme.text,
+            AutoButtonColor = false,
+            ZIndex = 21,
+        }, list)
+        corner(o, 4)
+        conn(o.MouseButton1Click, function()
+            btn.Text = opt
+            list.Visible = false
+            open = false
+            if callback then callback(opt) end
+        end)
+    end
+    conn(btn.MouseButton1Click, function()
+        open = not open
+        list.Visible = open
+        if open then
+            list.AutomaticSize = Enum.AutomaticSize.Y
+        end
+    end)
+    return { get = function() return btn.Text end, set = function(v) btn.Text = v; if callback then callback(v) end end }
+end
+
+function UILib.Button(parent, label, callback)
+    local btn = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 26),
+        BackgroundColor3 = Theme.panelLight,
+        Text = label,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = Theme.text,
+        AutoButtonColor = false,
+    }, parent)
+    corner(btn, 7)
+    stroke(btn, Theme.stroke, 1)
+    conn(btn.MouseButton1Click, callback)
+    return btn
+end
+
+function UILib.Keybind(parent, label, default, callback)
+    local row = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 28),
+        BackgroundTransparency = 1,
+    }, parent)
+    new("TextLabel", {
+        Size = UDim2.new(0.5, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Text = label,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = Theme.text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, row)
+    local text = typeof(default) == "EnumItem" and default.Name or tostring(default)
+    local btn = new("TextButton", {
+        Size = UDim2.new(0, 90, 0, 22),
+        Position = UDim2.new(1, -90, 0.5, -11),
+        BackgroundColor3 = Theme.panelLight,
+        Text = text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextColor3 = Theme.accentLight,
+        AutoButtonColor = false,
+    }, row)
+    corner(btn, 6)
+    local listening = false
+    local current = default
+    conn(btn.MouseButton1Click, function()
+        listening = true
+        btn.Text = "..."
+    end)
+    local c = conn(UserInputService.InputBegan, function(inp)
+        if not listening then return end
+        if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        listening = false
+        current = inp.KeyCode
+        btn.Text = current.Name
+        if callback then callback(current) end
+    end)
+    table.insert(Connections, c)
+    return { get = function() return current end }
+end
+
+function UILib.ColorPicker(parent, label, default, callback)
+    local row = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 28),
+        BackgroundTransparency = 1,
+    }, parent)
+    new("TextLabel", {
+        Size = UDim2.new(1, -40, 1, 0),
+        BackgroundTransparency = 1,
+        Text = label,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = Theme.text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, row)
+    local swatch = new("Frame", {
+        Size = UDim2.new(0, 28, 0, 20),
+        Position = UDim2.new(1, -28, 0.5, -10),
+        BackgroundColor3 = default,
+        BorderSizePixel = 0,
+    }, row)
+    corner(swatch, 5)
+    stroke(swatch, Theme.stroke, 1)
+
+    local H, S, V = default:ToHSV()
+    local popup = new("Frame", {
+        Size = UDim2.new(0, 170, 0, 150),
+        Position = UDim2.new(1, -170, 0, 32),
+        BackgroundColor3 = Theme.panelLight,
+        Visible = false,
+        ZIndex = 30,
+    }, row)
+    corner(popup, 8)
+    stroke(popup, Theme.stroke, 1)
+
+    local sv = new("ImageLabel", {
+        Size = UDim2.new(1, -16, 0, 80),
+        Position = UDim2.new(0, 8, 0, 8),
+        BackgroundColor3 = Color3.fromHSV(H, 1, 1),
+        BackgroundTransparency = 0,
+        Image = "rbxassetid://3700752136",
+        ImageColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+    }, popup)
+    corner(sv, 4)
+
+    local huebar = new("Frame", {
+        Size = UDim2.new(1, -16, 0, 14),
+        Position = UDim2.new(0, 8, 0, 108),
+        BorderSizePixel = 0,
+    }, popup)
+    corner(huebar, 3)
+    local hueGrad = new("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.0, Color3.fromHSV(0, 1, 1)),
+            ColorSequenceKeypoint.new(0.17, Color3.fromHSV(0.17, 1, 1)),
+            ColorSequenceKeypoint.new(0.33, Color3.fromHSV(0.33, 1, 1)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromHSV(0.5, 1, 1)),
+            ColorSequenceKeypoint.new(0.67, Color3.fromHSV(0.67, 1, 1)),
+            ColorSequenceKeypoint.new(0.83, Color3.fromHSV(0.83, 1, 1)),
+            ColorSequenceKeypoint.new(1.0, Color3.fromHSV(1, 1, 1)),
+        }),
+    }, huebar)
+
+    local svDragging = false
+    local hueDragging = false
+    local function svAt(x, y)
+        local px = math.clamp((x - sv.AbsolutePosition.X) / sv.AbsoluteSize.X, 0, 1)
+        local py = math.clamp((y - sv.AbsolutePosition.Y) / sv.AbsoluteSize.Y, 0, 1)
+        S, V = px, 1 - py
+        local col = Color3.fromHSV(H, S, V)
+        swatch.BackgroundColor3 = col
+        if callback then callback(col) end
+    end
+    local function hueAt(x)
+        local px = math.clamp((x - huebar.AbsolutePosition.X) / huebar.AbsoluteSize.X, 0, 1)
+        H = px
+        sv.BackgroundColor3 = Color3.fromHSV(H, 1, 1)
+        svAt(0, 0) -- keep
+        local col = Color3.fromHSV(H, S, V)
+        swatch.BackgroundColor3 = col
+        if callback then callback(col) end
+    end
+    conn(sv.InputBegan, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            svDragging = true; svAt(inp.Position.X, inp.Position.Y)
+        end
+    end)
+    conn(huebar.InputBegan, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            hueDragging = true; hueAt(inp.Position.X)
+        end
+    end)
+    conn(UserInputService.InputChanged, function(inp)
+        if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        if svDragging then svAt(inp.Position.X, inp.Position.Y) end
+        if hueDragging then hueAt(inp.Position.X) end
+    end)
+    conn(UserInputService.InputEnded, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            svDragging = false; hueDragging = false
+        end
+    end)
+    conn(swatch.InputBegan, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            popup.Visible = not popup.Visible
+        end
+    end)
+    return {
+        get = function()
+            return Color3.fromHSV(H, S, V)
+        end,
+    }
+end
+
+-- ============================================================
+-- FEATURE MODULE REGISTRY
+-- ============================================================
+local Registry = { modules = {} }
+
+function Registry.Register(category, name, module)
+    module.category = category
+    module.name = name
+    module.enabled = false
+    module.settings = module.settings or {}
+    Registry.modules[category] = Registry.modules[category] or {}
+    Registry.modules[category][name] = module
+end
+
+function Registry.Set(category, name, state)
+    local m = Registry.modules[category] and Registry.modules[category][name]
+    if not m then return end
+    if state and m.Enable then m:Enable() end
+    if not state and m.Disable then m:Disable() end
+    m.enabled = state
+    Config.features[category .. "." .. name] = state
+end
+
+function Registry.DisableAll()
+    for _, mods in pairs(Registry.modules) do
+        for _, m in pairs(mods) do
+            if m.enabled and m.Disable then m:Disable() end
+            m.enabled = false
+        end
+    end
+end
+
+-- Now let's write the combat features (each with toggles, sliders).
+-- ...
